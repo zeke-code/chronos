@@ -1,0 +1,313 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["project_name", "data", "model", "training"],
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "processed_file",
+        "target_column",
+        "sequence_length",
+        "prediction_horizon"
+      ],
+      "properties": {
+        "processed_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_column": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence_length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prediction_horizon": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "train_split": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "val_split": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "test_split": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "normalize_features": {
+          "type": "boolean"
+        },
+        "normalize_target": {
+          "type": "boolean"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "architecture",
+        "input_size",
+        "hidden_size",
+        "num_layers",
+        "output_size"
+      ],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "enum": ["lstm", "gru", "transformer"]
+        },
+        "input_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hidden_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "num_layers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dropout": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "bidirectional": {
+          "type": "boolean"
+        },
+        "output_size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "training": {
+      "type": "object",
+      "required": ["batch_size", "learning_rate", "num_epochs", "optimizer"],
+      "properties": {
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "learning_rate": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": 0
+        },
+        "num_epochs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "optimizer": {
+          "type": "string",
+          "enum": ["adam", "sgd", "rmsprop"]
+        },
+        "weight_decay": {
+          "type": "number",
+          "minimum": 0
+        },
+        "scheduler": {
+          "type": "string",
+          "enum": ["reduce_on_plateau", "cosine", "exponential", "step"]
+        },
+        "patience": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "early_stopping_patience": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gradient_clipping": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "data_augmentation": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "noise_factor": {
+          "type": "number",
+          "minimum": 0
+        },
+        "scaling_factor": {
+          "type": "number",
+          "minimum": 0
+        },
+        "time_shift_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "augmentation_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "transfer_learning": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "pretrained_model_path": {
+          "type": ["string", "null"]
+        },
+        "freeze_layers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fine_tune_layers": {
+          "type": "string"
+        }
+      }
+    },
+    "checkpointing": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "save_best_only": {
+          "type": "boolean"
+        },
+        "save_frequency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkpoint_dir": {
+          "type": "string"
+        },
+        "resume_training": {
+          "type": "boolean"
+        },
+        "resume_checkpoint": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "log_dir": {
+          "type": "string"
+        },
+        "tensorboard_enabled": {
+          "type": "boolean"
+        },
+        "log_frequency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "save_predictions": {
+          "type": "boolean"
+        },
+        "save_figures": {
+          "type": "boolean"
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["mae", "mse", "rmse", "mape", "smape", "r2"]
+          }
+        },
+        "validation_frequency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "plot_predictions": {
+          "type": "boolean"
+        },
+        "n_prediction_samples": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "test_batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "save_test_results": {
+          "type": "boolean"
+        },
+        "generate_test_report": {
+          "type": "boolean"
+        }
+      }
+    },
+    "hyperparameter_search": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "search_space": {
+          "type": "object"
+        },
+        "search_method": {
+          "type": "string",
+          "enum": ["grid", "random", "bayesian"]
+        },
+        "max_trials": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_comparison": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "models_to_compare": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
