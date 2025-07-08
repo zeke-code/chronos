@@ -1,0 +1,176 @@
+import pandas as pd
+import numpy as np
+import json
+import jsonschema
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from sklearn.preprocessing import MinMaxScaler
+from pathlib import Path
+import joblib # For saving the scaler
+
+# Import our custom modules
+from utils import create_sequences, TimeSeriesDataset
+from model import LoadForecastingLSTM
+
+# --- 1. SETUP ---
+print("--- Starting Training Script ---")
+
+# Load configuration and validate against schema
+try:
+    with open('config/config.json', 'r') as f:
+        config = json.load(f)
+    with open('config/config_schema.json', 'r') as f:
+        schema = json.load(f)
+
+    jsonschema.validate(instance=config, schema=schema)
+    print("Configuration file is valid.")
+except FileNotFoundError as e:
+    print(f"Error: Configuration or schema file not found. {e}")
+    exit()
+except jsonschema.exceptions.ValidationError as e:
+    print(f"Error: Configuration file is invalid. {e.message}")
+    exit()
+except json.JSONDecodeError as e:
+    print(f"Error: Could not decode JSON from config or schema file. {e}")
+    exit()
+
+# Create necessary directories from config
+Path(config['logging']['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
+Path(config['logging']['log_dir']).mkdir(parents=True, exist_ok=True)
+
+# Set up device (use GPU if available, otherwise CPU)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+# Initialize TensorBoard writer for logging
+writer = SummaryWriter(log_dir=config['logging']['log_dir'])
+
+# --- 2. DATA LOADING AND PREPARATION ---
+print("--- Loading and Preparing Data ---")
+df = pd.read_csv(config['data']['processed_path'], index_col='Date', parse_dates=True)
+
+target_col = 'actual_load'
+y = df[[target_col]]
+X = df.drop(columns=[target_col])
+
+# Update the input_size in our config based on the number of features
+config['model']['input_size'] = X.shape[1]
+print(f"Number of features (input_size): {config['model']['input_size']}")
+
+val_split_point = int(len(df) * (1 - config['data']['validation_split']))
+X_train, X_val = X[:val_split_point], X[val_split_point:]
+y_train, y_val = y[:val_split_point], y[val_split_point:]
+print(f"Training set size: {len(X_train)}, Validation set size: {len(X_val)}")
+
+scaler_X = MinMaxScaler()
+X_train_scaled = scaler_X.fit_transform(X_train)
+X_val_scaled = scaler_X.transform(X_val)
+
+scaler_y = MinMaxScaler()
+y_train_scaled = scaler_y.fit_transform(y_train)
+y_val_scaled = scaler_y.transform(y_val)
+
+joblib.dump(scaler_X, Path(config['logging']['checkpoint_dir']) / 'scaler_X.gz')
+joblib.dump(scaler_y, Path(config['logging']['checkpoint_dir']) / 'scaler_y.gz')
+print("Scalers fitted and saved.")
+
+seq_length = config['training']['sequence_length']
+X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_scaled.flatten(), seq_length)
+X_val_seq, y_val_seq = create_sequences(X_val_scaled, y_val_scaled.flatten(), seq_length)
+
+train_dataset = TimeSeriesDataset(X_train_seq, y_train_seq)
+val_dataset = TimeSeriesDataset(X_val_seq, y_val_seq)
+
+train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
+print("DataLoaders created.")
+
+# --- 3. MODEL, LOSS, AND OPTIMIZER ---
+print("--- Initializing Model ---")
+model = LoadForecastingLSTM(
+    input_size=config['model']['input_size'],
+    hidden_size=config['model']['hidden_size'],
+    num_layers=config['model']['num_layers'],
+    output_size=config['model']['output_size'],
+    dropout_prob=config['model']['dropout']
+).to(device)
+
+loss_function = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
+
+# --- 4. RESUME FROM CHECKPOINT LOGIC ---
+start_epoch = 0
+best_val_loss = float('inf')
+# Checkpoint for resuming training
+resume_checkpoint_path = Path(config['logging']['checkpoint_dir']) / "latest_checkpoint.pth"
+
+if resume_checkpoint_path.exists():
+    print(f"--- Resuming training from checkpoint: {resume_checkpoint_path} ---")
+    checkpoint = torch.load(resume_checkpoint_path, map_location=device)
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    best_val_loss = checkpoint['best_val_loss']
+    
+    print(f"Resumed from Epoch {start_epoch}. Best validation loss so far: {best_val_loss:.6f}")
+else:
+    print("--- Starting training from scratch ---")
+
+print(model)
+
+# --- 5. TRAINING LOOP ---
+print(f"--- Starting Training from Epoch {start_epoch + 1} ---")
+epochs = config['training']['epochs']
+
+for epoch in range(start_epoch, epochs):
+    # Training Phase
+    model.train()
+    train_loss = 0.0
+    for X_batch, y_batch in train_loader:
+        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        y_pred = model(X_batch)
+        loss = loss_function(y_pred, y_batch.unsqueeze(1))
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item() * X_batch.size(0)
+    avg_train_loss = train_loss / len(train_loader.dataset)
+
+    # Validation Phase
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            y_pred = model(X_batch)
+            loss = loss_function(y_pred, y_batch.unsqueeze(1))
+            val_loss += loss.item() * X_batch.size(0)
+    avg_val_loss = val_loss / len(val_loader.dataset)
+
+    # Logging
+    print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
+    writer.add_scalar('Loss/Train', avg_train_loss, epoch)
+    writer.add_scalar('Loss/Validation', avg_val_loss, epoch)
+    writer.flush()
+
+    # --- CHECKPOINTING ---
+    # Strategy 1: Save the latest state for resuming
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'best_val_loss': best_val_loss, # Save the current best loss
+    }, resume_checkpoint_path)
+    
+    # Strategy 2: Save the best model for evaluation
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        best_model_path = Path(config['logging']['checkpoint_dir']) / config['logging']['best_model_name']
+        torch.save(model.state_dict(), best_model_path)
+        print(f"Validation loss decreased. Saving best model to {best_model_path}")
+
+writer.close()
+print("--- Training Finished ---")
