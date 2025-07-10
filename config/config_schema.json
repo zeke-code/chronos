@@ -27,7 +27,31 @@
         "sequence_length": { "type": "integer", "minimum": 1 },
         "batch_size": { "type": "integer", "minimum": 1 },
         "epochs": { "type": "integer", "minimum": 1 },
-        "learning_rate": { "type": "number", "exclusiveMinimum": 0 }
+        "learning_rate": { "type": "number", "exclusiveMinimum": 0 },
+        "early_stopping": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether to enable early stopping"
+            },
+            "patience": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of epochs with no improvement after which training will be stopped"
+            },
+            "min_delta": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Minimum change in the monitored quantity to qualify as an improvement"
+            },
+            "verbose": {
+              "type": "boolean",
+              "description": "Whether to print early stopping messages"
+            }
+          },
+          "required": ["enabled", "patience"]
+        }
       }
     },
     "model": {

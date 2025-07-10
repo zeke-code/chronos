@@ -7,7 +7,13 @@
     "sequence_length": 96,
     "batch_size": 64,
     "epochs": 50,
-    "learning_rate": 0.001
+    "learning_rate": 0.001,
+    "early_stopping": {
+      "enabled": true,
+      "patience": 10,
+      "min_delta": 0.00001,
+      "verbose": true
+    }
   },
   "model": {
     "input_size": -1,

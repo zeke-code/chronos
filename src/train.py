@@ -103,6 +103,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning
 # --- 4. RESUME FROM CHECKPOINT LOGIC ---
 start_epoch = 0
 best_val_loss = float('inf')
+patience_counter = 0  # For early stopping
 # Checkpoint for resuming training
 resume_checkpoint_path = Path(config['logging']['checkpoint_dir']) / "latest_checkpoint.pth"
 
@@ -114,8 +115,11 @@ if resume_checkpoint_path.exists():
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch'] + 1
     best_val_loss = checkpoint['best_val_loss']
+    patience_counter = checkpoint.get('patience_counter', 0)  # Resume patience counter
     
     print(f"Resumed from Epoch {start_epoch}. Best validation loss so far: {best_val_loss:.6f}")
+    if patience_counter > 0:
+        print(f"Early stopping patience counter: {patience_counter}")
 else:
     print("--- Starting training from scratch ---")
 
@@ -124,6 +128,16 @@ print(model)
 # --- 5. TRAINING LOOP ---
 print(f"--- Starting Training from Epoch {start_epoch + 1} ---")
 epochs = config['training']['epochs']
+
+# Get early stopping configuration
+early_stopping_config = config['training'].get('early_stopping', {})
+early_stopping_enabled = early_stopping_config.get('enabled', False)
+patience = early_stopping_config.get('patience', 10)
+min_delta = early_stopping_config.get('min_delta', 0.0001)
+verbose = early_stopping_config.get('verbose', True)
+
+if early_stopping_enabled:
+    print(f"Early stopping enabled with patience={patience}, min_delta={min_delta}")
 
 for epoch in range(start_epoch, epochs):
     # Training Phase
@@ -162,15 +176,28 @@ for epoch in range(start_epoch, epochs):
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'best_val_loss': best_val_loss, # Save the current best loss
+        'best_val_loss': best_val_loss,
+        'patience_counter': patience_counter,  # Save patience counter for resuming
     }, resume_checkpoint_path)
     
-    # Strategy 2: Save the best model for evaluation
-    if avg_val_loss < best_val_loss:
+    # Strategy 2: Save the best model for evaluation and early stopping check
+    if avg_val_loss < best_val_loss - min_delta:
         best_val_loss = avg_val_loss
         best_model_path = Path(config['logging']['checkpoint_dir']) / config['logging']['best_model_name']
         torch.save(model.state_dict(), best_model_path)
         print(f"Validation loss decreased. Saving best model to {best_model_path}")
+        patience_counter = 0  # Reset patience counter
+    else:
+        patience_counter += 1
+        if early_stopping_enabled and verbose:
+            print(f"Early stopping patience: {patience_counter}/{patience}")
+    
+    # Check early stopping condition
+    if early_stopping_enabled and patience_counter >= patience:
+        print(f"\n--- Early stopping triggered at epoch {epoch+1} ---")
+        print(f"Best validation loss: {best_val_loss:.6f}")
+        print(f"No improvement for {patience} epochs.")
+        break
 
 writer.close()
 print("--- Training Finished ---")
