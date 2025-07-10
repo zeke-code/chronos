@@ -119,11 +119,6 @@ def create_load_features(df: pd.DataFrame) -> pd.DataFrame:
     for days_back in [1, 7]:
         df[f'load_same_hour_{days_back}d_ago'] = df['actual_load'].shift(24 * days_back)
     
-    # Use Terna's forecast as a feature
-    if 'forecast_load' in df.columns:
-        df['terna_forecast_error'] = df['forecast_load'] - df['actual_load']
-        df['terna_forecast_ratio'] = df['forecast_load'] / df['actual_load']
-    
     # Drop rows with NaN values created by lag/rolling features
     df = df.dropna()
     
@@ -240,10 +235,6 @@ def prepare_data_for_training(df: pd.DataFrame, target_col: str = 'actual_load')
         # Past memory features
         'load_same_hour_1d_ago', 'load_same_hour_7d_ago',
     ]
-    
-    # If forecast_load is present, add this column to our final dataset.
-    if 'forecast_load' in df.columns:
-        feature_columns.extend(['forecast_load', 'terna_forecast_error'])
     
     # Append all the feature columns to our final dataset.
     feature_columns.append(target_col)
