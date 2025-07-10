@@ -6,10 +6,10 @@ import torch
 import joblib
 from pathlib import Path
 import matplotlib.pyplot as plt
-import seaborn as sns
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Import our custom modules
-from utils import create_sequences, TimeSeriesDataset # We need create_sequences
+from utils import create_sequences
 from model import LoadForecastingLSTM
 
 # --- 1. SETUP AND CONFIGURATION ---
@@ -119,9 +119,6 @@ print(f"Generated {len(predictions)} predictions.")
 # --- 5. EVALUATE AND VISUALIZE ---
 # Align actual values with predictions.
 actuals = y_test.iloc[seq_length:].values
-
-# Calculate performance metrics
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 mae = mean_absolute_error(actuals, predictions)
 rmse = np.sqrt(mean_squared_error(actuals, predictions))

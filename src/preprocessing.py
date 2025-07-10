@@ -3,7 +3,7 @@ import numpy as np
 import os
 import holidays
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 import matplotlib.pyplot as plt
 
 
@@ -205,13 +205,6 @@ def analyze_load_patterns(df: pd.DataFrame, save_path: str = 'results/figures/')
     print(f"Peak load: {df['actual_load'].max():.2f} MW")
     print(f"Minimum load: {df['actual_load'].min():.2f} MW")
     print(f"Standard deviation: {df['actual_load'].std():.2f} MW")
-    
-    if 'forecast_load' in df.columns:
-        mae = np.abs(df['forecast_load'] - df['actual_load']).mean()
-        mape = (np.abs(df['forecast_load'] - df['actual_load']) / df['actual_load']).mean() * 100
-        print(f"\nTerna Forecast Accuracy:")
-        print(f"MAE: {mae:.2f} MW")
-        print(f"MAPE: {mape:.2f}%")
 
 
 def prepare_data_for_training(df: pd.DataFrame, target_col: str = 'actual_load') -> pd.DataFrame:
