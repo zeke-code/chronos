@@ -19,7 +19,7 @@ jobs:
         with:
           auto-update-conda: true
           python-version: "3.11"
-          environment-file: environment.yaml
+          environment-file: environment.yml
           activate-environment: chronos_stable
 
       - name: Lint with Ruff
