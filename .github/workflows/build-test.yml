@@ -37,4 +37,5 @@ jobs:
           echo "Content of config.json modified for our test:"
           cat config/config.json
 
+          python src/preprocessing.py
           python src/train.py
