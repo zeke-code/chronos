@@ -1,0 +1,40 @@
+name: Build-Test Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.11"
+          environment-file: environment.yaml
+          activate-environment: chronos_stable
+
+      - name: Lint with Ruff
+        shell: bash -l {0}
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Run training smoke test (1 epoch)
+        shell: bash -l {0}
+        run: |
+          # Replace epochs in config file with 1 for the sake of the test.
+          sed -i 's/"epochs": 50/"epochs": 1/g' config/config.json
+
+          echo "Content of config.json modified for our test:"
+          cat config/config.json
+
+          python src/train.py
