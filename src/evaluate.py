@@ -158,6 +158,7 @@ plt.tight_layout()
 
 # Save the figure
 figure_path = Path('results/figures') / 'evaluation_plot.png'
+figure_path.mkdir(parents=True, exist_ok=True)
 plt.savefig(figure_path, dpi=300)
 print(f"Evaluation plot saved to {figure_path}")
 plt.show()
