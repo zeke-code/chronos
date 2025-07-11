@@ -19,7 +19,7 @@ conda env create -f environment.yml
 3. Run the following commands once dependencies are installed
 
 ```bash
-python src/preprocessing.py
+python src/data_preprocessing.py
 python src/train.py
 python src/evaluate.py
 ```
