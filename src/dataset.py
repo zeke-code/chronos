@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 
 def create_sequences(features, target, seq_length):
     """
-    Transforms a time series dataset into sequences for an LSTM.
+    Transforms a time series dataset into sequences.
 
     Args:
         features (np.array): Array of input features.

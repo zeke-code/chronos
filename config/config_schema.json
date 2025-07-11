@@ -56,19 +56,34 @@
     },
     "model": {
       "type": "object",
-      "required": [
-        "input_size",
-        "hidden_size",
-        "num_layers",
-        "output_size",
-        "dropout"
-      ],
+      "required": ["type", "input_size", "output_size", "dropout"],
       "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["lstm", "gru"],
+          "description": "Type of model to use"
+        },
         "input_size": { "type": "integer" },
-        "hidden_size": { "type": "integer", "minimum": 1 },
-        "num_layers": { "type": "integer", "minimum": 1 },
         "output_size": { "type": "integer", "minimum": 1 },
-        "dropout": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+        "dropout": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+
+        "lstm": {
+          "type": "object",
+          "required": ["hidden_size", "num_layers"],
+          "properties": {
+            "hidden_size": { "type": "integer", "minimum": 1 },
+            "num_layers": { "type": "integer", "minimum": 1 }
+          }
+        },
+
+        "gru": {
+          "type": "object",
+          "required": ["hidden_size", "num_layers"],
+          "properties": {
+            "hidden_size": { "type": "integer", "minimum": 1 },
+            "num_layers": { "type": "integer", "minimum": 1 }
+          }
+        }
       }
     },
     "logging": {

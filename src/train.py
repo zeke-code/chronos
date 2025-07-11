@@ -7,11 +7,11 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.preprocessing import MinMaxScaler
 from pathlib import Path
-import joblib # For saving the scaler
+import joblib
 
 # Import our custom modules
-from utils import create_sequences, TimeSeriesDataset
-from model import LoadForecastingLSTM
+from dataset import create_sequences, TimeSeriesDataset
+from model import get_model
 
 # --- 1. SETUP ---
 print("--- Starting Training Script ---")
@@ -35,16 +35,23 @@ except json.JSONDecodeError as e:
     print(f"Error: Could not decode JSON from config or schema file. {e}")
     exit()
 
+# Get model type
+model_type = config['model']['type']
+print(f"Model type selected: {model_type.upper()}")
+
 # Create necessary directories from config
-Path(config['logging']['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
-Path(config['logging']['log_dir']).mkdir(parents=True, exist_ok=True)
+# Add model type to directory names for organization
+checkpoint_dir = Path(config['logging']['checkpoint_dir']) / model_type
+log_dir = Path(config['logging']['log_dir']) / model_type
+checkpoint_dir.mkdir(parents=True, exist_ok=True)
+log_dir.mkdir(parents=True, exist_ok=True)
 
 # Set up device (use GPU if available, otherwise CPU)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 # Initialize TensorBoard writer for logging
-writer = SummaryWriter(log_dir=config['logging']['log_dir'])
+writer = SummaryWriter(log_dir=log_dir)
 
 # --- 2. DATA LOADING AND PREPARATION ---
 print("--- Loading and Preparing Data ---")
@@ -55,8 +62,8 @@ y = df[[target_col]]
 X = df.drop(columns=[target_col])
 
 # Update the input_size in our config based on the number of features
-config['model']['input_size'] = X.shape[1]
-print(f"Number of features (input_size): {config['model']['input_size']}")
+input_size = X.shape[1]
+print(f"Number of features (input_size): {input_size}")
 
 val_split_point = int(len(df) * (1 - config['data']['validation_split']))
 X_train, X_val = X[:val_split_point], X[val_split_point:]
@@ -71,8 +78,8 @@ scaler_y = MinMaxScaler()
 y_train_scaled = scaler_y.fit_transform(y_train)
 y_val_scaled = scaler_y.transform(y_val)
 
-joblib.dump(scaler_X, Path(config['logging']['checkpoint_dir']) / 'scaler_X.gz')
-joblib.dump(scaler_y, Path(config['logging']['checkpoint_dir']) / 'scaler_y.gz')
+joblib.dump(scaler_X, checkpoint_dir / 'scaler_X.gz')
+joblib.dump(scaler_y, checkpoint_dir / 'scaler_y.gz')
 print("Scalers fitted and saved.")
 
 seq_length = config['training']['sequence_length']
@@ -88,13 +95,20 @@ print("DataLoaders created.")
 
 # --- 3. MODEL, LOSS, AND OPTIMIZER ---
 print("--- Initializing Model ---")
-model = LoadForecastingLSTM(
-    input_size=config['model']['input_size'],
-    hidden_size=config['model']['hidden_size'],
-    num_layers=config['model']['num_layers'],
-    output_size=config['model']['output_size'],
-    dropout_prob=config['model']['dropout']
-).to(device)
+
+# Get model-specific config
+model_config = config['model'].copy()
+if model_type in config['model']:
+    # Merge model-specific parameters
+    model_specific_config = config['model'][model_type]
+    model_config.update(model_specific_config)
+
+# Create model using factory function
+model = get_model(model_type, model_config, input_size).to(device)
+
+# Calculate total parameters
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Total trainable parameters: {total_params:,}")
 
 loss_function = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
@@ -102,9 +116,8 @@ optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning
 # --- 4. RESUME FROM CHECKPOINT LOGIC ---
 start_epoch = 0
 best_val_loss = float('inf')
-patience_counter = 0  # For early stopping
-# Checkpoint for resuming training
-resume_checkpoint_path = Path(config['logging']['checkpoint_dir']) / "latest_checkpoint.pth"
+patience_counter = 0
+resume_checkpoint_path = checkpoint_dir / f"latest_checkpoint_{model_type}.pth"
 
 if resume_checkpoint_path.exists():
     print(f"--- Resuming training from checkpoint: {resume_checkpoint_path} ---")
@@ -114,7 +127,7 @@ if resume_checkpoint_path.exists():
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch'] + 1
     best_val_loss = checkpoint['best_val_loss']
-    patience_counter = checkpoint.get('patience_counter', 0)  # Resume patience counter
+    patience_counter = checkpoint.get('patience_counter', 0)
     
     print(f"Resumed from Epoch {start_epoch}. Best validation loss so far: {best_val_loss:.6f}")
     if patience_counter > 0:
@@ -170,22 +183,30 @@ for epoch in range(start_epoch, epochs):
     writer.flush()
 
     # --- CHECKPOINTING ---
-    # Strategy 1: Save the latest state for resuming
+    # Save the latest state for resuming
     torch.save({
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'best_val_loss': best_val_loss,
-        'patience_counter': patience_counter,  # Save patience counter for resuming
+        'patience_counter': patience_counter,
+        'model_type': model_type,
+        'model_config': model_config
     }, resume_checkpoint_path)
     
-    # Strategy 2: Save the best model for evaluation and early stopping check
+    # Save the best model for evaluation
     if avg_val_loss < best_val_loss - min_delta:
         best_val_loss = avg_val_loss
-        best_model_path = Path(config['logging']['checkpoint_dir']) / config['logging']['best_model_name']
-        torch.save(model.state_dict(), best_model_path)
+        best_model_path = checkpoint_dir / f"best_model_{model_type}.pth"
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'model_type': model_type,
+            'model_config': model_config,
+            'input_size': input_size,
+            'best_val_loss': best_val_loss
+        }, best_model_path)
         print(f"Validation loss decreased. Saving best model to {best_model_path}")
-        patience_counter = 0  # Reset patience counter
+        patience_counter = 0
     else:
         patience_counter += 1
         if early_stopping_enabled and verbose:
@@ -200,3 +221,5 @@ for epoch in range(start_epoch, epochs):
 
 writer.close()
 print("--- Training Finished ---")
+print(f"Model type: {model_type.upper()}")
+print(f"Best validation loss: {best_val_loss:.6f}")

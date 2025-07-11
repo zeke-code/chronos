@@ -16,11 +16,20 @@
     }
   },
   "model": {
+    "type": "lstm",
     "input_size": -1,
-    "hidden_size": 128,
-    "num_layers": 2,
     "output_size": 1,
-    "dropout": 0.2
+    "dropout": 0.2,
+
+    "lstm": {
+      "hidden_size": 128,
+      "num_layers": 2
+    },
+
+    "gru": {
+      "hidden_size": 128,
+      "num_layers": 2
+    }
   },
   "logging": {
     "checkpoint_dir": "results/checkpoints",
