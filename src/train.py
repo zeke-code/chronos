@@ -57,19 +57,38 @@ writer = SummaryWriter(log_dir=log_dir)
 print("--- Loading and Preparing Data ---")
 df = pd.read_csv(config['data']['processed_path'], index_col='Date', parse_dates=True)
 
+# Load split information
+try:
+    with open(config['data']['split_info_path'], 'r') as f:
+        split_info = json.load(f)
+    print("Loaded data split information")
+except FileNotFoundError:
+    print("Error: Data split information file not found. Run data_preprocessing.py first.")
+    exit()
+
+# Extract train and validation data based on split indices
+train_start, train_end = split_info['train_start'], split_info['train_end']
+val_start, val_end = split_info['val_start'], split_info['val_end']
+
+# Split the data
+df_train = df.iloc[train_start:train_end]
+df_val = df.iloc[val_start:val_end]
+
+print(f"Train data: {len(df_train)} samples ({split_info['train_date_range'][0]} to {split_info['train_date_range'][1]})")
+print(f"Validation data: {len(df_val)} samples ({split_info['val_date_range'][0]} to {split_info['val_date_range'][1]})")
+
+# Separate features and target
 target_col = 'actual_load'
-y = df[[target_col]]
-X = df.drop(columns=[target_col])
+X_train = df_train.drop(columns=[target_col])
+y_train = df_train[[target_col]]
+X_val = df_val.drop(columns=[target_col])
+y_val = df_val[[target_col]]
 
 # Update the input_size in our config based on the number of features
-input_size = X.shape[1]
+input_size = X_train.shape[1]
 print(f"Number of features (input_size): {input_size}")
 
-val_split_point = int(len(df) * (1 - config['data']['validation_split']))
-X_train, X_val = X[:val_split_point], X[val_split_point:]
-y_train, y_val = y[:val_split_point], y[val_split_point:]
-print(f"Training set size: {len(X_train)}, Validation set size: {len(X_val)}")
-
+# Scale the data
 scaler_X = MinMaxScaler()
 X_train_scaled = scaler_X.fit_transform(X_train)
 X_val_scaled = scaler_X.transform(X_val)
@@ -86,6 +105,10 @@ seq_length = config['training']['sequence_length']
 X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_scaled.flatten(), seq_length)
 X_val_seq, y_val_seq = create_sequences(X_val_scaled, y_val_scaled.flatten(), seq_length)
 
+print(f"Training sequences: {len(X_train_seq)}")
+print(f"Validation sequences: {len(X_val_seq)}")
+
+# Create datasets and dataloaders
 train_dataset = TimeSeriesDataset(X_train_seq, y_train_seq)
 val_dataset = TimeSeriesDataset(X_val_seq, y_val_seq)
 
@@ -191,7 +214,8 @@ for epoch in range(start_epoch, epochs):
         'best_val_loss': best_val_loss,
         'patience_counter': patience_counter,
         'model_type': model_type,
-        'model_config': model_config
+        'model_config': model_config,
+        'split_info': split_info  # Save split info in checkpoint
     }, resume_checkpoint_path)
     
     # Save the best model for evaluation
@@ -203,7 +227,8 @@ for epoch in range(start_epoch, epochs):
             'model_type': model_type,
             'model_config': model_config,
             'input_size': input_size,
-            'best_val_loss': best_val_loss
+            'best_val_loss': best_val_loss,
+            'split_info': split_info  # Save split info in best model too
         }, best_model_path)
         print(f"Validation loss decreased. Saving best model to {best_model_path}")
         patience_counter = 0

@@ -1,7 +1,10 @@
 {
   "data": {
     "processed_path": "data/processed/load_data_processed.csv",
-    "validation_split": 0.2
+    "split_info_path": "data/processed/data_split_info.json",
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15
   },
   "training": {
     "sequence_length": 96,

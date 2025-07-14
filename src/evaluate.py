@@ -6,7 +6,7 @@ import torch
 import joblib
 from pathlib import Path
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Import our custom modules
 from dataset import create_sequences
@@ -61,6 +61,7 @@ try:
     model_config = checkpoint['model_config']
     input_size = checkpoint['input_size']
     best_val_loss = checkpoint.get('best_val_loss', 'N/A')
+    split_info_from_model = checkpoint.get('split_info', None)
 except FileNotFoundError:
     print(f"Error: Model file not found at {model_path}. Make sure the best model was saved during training.")
     exit()
@@ -75,10 +76,31 @@ print("Model and scalers loaded successfully.")
 print(f"Best validation loss during training: {best_val_loss}")
 
 # --- 3. PREPARE THE TEST DATA ---
-print("--- Preparing Test Data (from validation split) ---")
+print("--- Preparing Test Data ---")
+
+# Load the full dataset
 df_full = pd.read_csv(config['data']['processed_path'], index_col='Date', parse_dates=True)
-val_split_point = int(len(df_full) * (1 - config['data']['validation_split']))
-df_test = df_full[val_split_point:]
+
+# Load split information
+try:
+    with open(config['data']['split_info_path'], 'r') as f:
+        split_info = json.load(f)
+    print("Loaded data split information")
+except FileNotFoundError:
+    # Fallback to split info from model if available
+    if split_info_from_model:
+        split_info = split_info_from_model
+        print("Using split information from model checkpoint")
+    else:
+        print("Error: Data split information not found. Run data_preprocessing.py first.")
+        exit()
+
+# Extract test data based on split indices
+test_start = split_info['test_start']
+test_end = split_info['test_end']
+df_test = df_full.iloc[test_start:test_end]
+
+print(f"Test data: {len(df_test)} samples ({split_info['test_date_range'][0]} to {split_info['test_date_range'][1]})")
 
 # Separate features (X) and target (y)
 target_col = 'actual_load'
@@ -92,6 +114,8 @@ y_test_scaled = scaler_y.transform(y_test)
 # Create sequences
 seq_length = config['training']['sequence_length']
 X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_scaled.flatten(), seq_length)
+
+print(f"Test sequences created: {len(X_test_seq)}")
 
 # Convert to PyTorch tensors
 X_test_tensor = torch.tensor(X_test_seq, dtype=torch.float32).to(device)
@@ -120,7 +144,7 @@ mae = mean_absolute_error(actuals, predictions)
 rmse = np.sqrt(mean_squared_error(actuals, predictions))
 mape = np.mean(np.abs((actuals - predictions) / actuals)) * 100
 
-print(f"\n--- Evaluation Metrics for {model_type.upper()} ---")
+print(f"\n--- Test Set Evaluation Metrics for {model_type.upper()} ---")
 print(f"Mean Absolute Error (MAE): {mae:.2f} MW")
 print(f"Root Mean Squared Error (RMSE): {rmse:.2f} MW")
 print(f"Mean Absolute Percentage Error (MAPE): {mape:.2f} %")
@@ -135,33 +159,51 @@ results_df = pd.DataFrame({
 print("\n--- Generating Visualization ---")
 plt.style.use('seaborn-v0_8-whitegrid')
 
-# Create two plots: one for a subset and one for error distribution
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 12))
+# Create three plots
+fig, axes = plt.subplots(3, 1, figsize=(18, 16))
 
-# Plot 1: Time series comparison
+# Plot 1: Time series comparison (first 500 points)
 plot_subset = results_df.head(500)  # Plot the first ~5 days
-ax1.plot(plot_subset.index, plot_subset['Actual Load'], label='Actual Load', color='blue', linewidth=2)
-ax1.plot(plot_subset.index, plot_subset['Predicted Load'], label=f'Predicted Load ({model_type.upper()})', 
+axes[0].plot(plot_subset.index, plot_subset['Actual Load'], label='Actual Load', color='blue', linewidth=2)
+axes[0].plot(plot_subset.index, plot_subset['Predicted Load'], label=f'Predicted Load ({model_type.upper()})', 
          color='red', linestyle='--', alpha=0.8)
-ax1.set_title(f'Load Forecast vs. Actual Load - {model_type.upper()} Model (Test Set)', fontsize=16)
-ax1.set_xlabel('Date', fontsize=12)
-ax1.set_ylabel('Load (MW)', fontsize=12)
-ax1.legend(fontsize=12)
-ax1.grid(True)
+axes[0].set_title(f'Load Forecast vs. Actual Load - {model_type.upper()} Model (Test Set - First 500 Points)', fontsize=16)
+axes[0].set_xlabel('Date', fontsize=12)
+axes[0].set_ylabel('Load (MW)', fontsize=12)
+axes[0].legend(fontsize=12)
+axes[0].grid(True)
 
-# Plot 2: Error distribution
+# Add text box with metrics
+metrics_text = f'MAE: {mae:.2f} MW\nRMSE: {rmse:.2f} MW\nMAPE: {mape:.2f}%'
+axes[0].text(0.02, 0.95, metrics_text, transform=axes[0].transAxes, fontsize=11,
+         verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+# Plot 2: Scatter plot of predictions vs actuals
+axes[1].scatter(actuals, predictions, alpha=0.5, s=10)
+axes[1].plot([actuals.min(), actuals.max()], [actuals.min(), actuals.max()], 'r--', lw=2, label='Perfect Prediction')
+axes[1].set_xlabel('Actual Load (MW)', fontsize=12)
+axes[1].set_ylabel('Predicted Load (MW)', fontsize=12)
+axes[1].set_title(f'Predicted vs Actual Load - {model_type.upper()} Model (Test Set)', fontsize=16)
+axes[1].legend()
+axes[1].grid(True, alpha=0.3)
+
+r2 = r2_score(actuals, predictions)
+axes[1].text(0.05, 0.95, f'R² = {r2:.4f}', transform=axes[1].transAxes, fontsize=12,
+         verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+
+# Plot 3: Error distribution
 errors = actuals.flatten() - predictions.flatten()
-ax2.hist(errors, bins=50, edgecolor='black', alpha=0.7, color='green')
-ax2.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Error')
-ax2.set_title(f'Prediction Error Distribution - {model_type.upper()} Model', fontsize=16)
-ax2.set_xlabel('Error (MW)', fontsize=12)
-ax2.set_ylabel('Frequency', fontsize=12)
-ax2.legend()
-ax2.grid(True, alpha=0.3)
+axes[2].hist(errors, bins=50, edgecolor='black', alpha=0.7, color='green')
+axes[2].axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Error')
+axes[2].set_title(f'Prediction Error Distribution - {model_type.upper()} Model (Test Set)', fontsize=16)
+axes[2].set_xlabel('Error (MW)', fontsize=12)
+axes[2].set_ylabel('Frequency', fontsize=12)
+axes[2].legend()
+axes[2].grid(True, alpha=0.3)
 
 # Add error statistics text
-error_stats = f'Mean Error: {np.mean(errors):.2f} MW\nStd Error: {np.std(errors):.2f} MW'
-ax2.text(0.02, 0.95, error_stats, transform=ax2.transAxes, fontsize=11,
+error_stats = f'Mean Error: {np.mean(errors):.2f} MW\nStd Error: {np.std(errors):.2f} MW\nMin Error: {np.min(errors):.2f} MW\nMax Error: {np.max(errors):.2f} MW'
+axes[2].text(0.02, 0.95, error_stats, transform=axes[2].transAxes, fontsize=11,
          verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
 plt.tight_layout()
@@ -169,7 +211,7 @@ plt.tight_layout()
 # Save the figure
 figure_dir = Path('results/figures') / model_type
 figure_dir.mkdir(parents=True, exist_ok=True)
-figure_path = figure_dir / f'evaluation_plot_{model_type}.png'
+figure_path = figure_dir / f'test_evaluation_plot_{model_type}.png'
 plt.savefig(figure_path, dpi=300)
 print(f"Evaluation plot saved to {figure_path}")
 plt.show()
@@ -194,13 +236,13 @@ ax2.plot(hourly_mape.index, hourly_mape.values, color='red', marker='o', label='
 ax.set_xlabel('Hour of Day', fontsize=12)
 ax.set_ylabel('Mean Absolute Error (MW)', fontsize=12)
 ax2.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12, color='red')
-ax.set_title(f'Prediction Performance by Hour - {model_type.upper()} Model', fontsize=14)
+ax.set_title(f'Test Set Prediction Performance by Hour - {model_type.upper()} Model', fontsize=14)
 ax.legend(loc='upper left')
 ax2.legend(loc='upper right')
 ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
-hourly_figure_path = figure_dir / f'hourly_performance_{model_type}.png'
+hourly_figure_path = figure_dir / f'test_hourly_performance_{model_type}.png'
 plt.savefig(hourly_figure_path, dpi=300)
 print(f"Hourly performance plot saved to {hourly_figure_path}")
 plt.show()
@@ -208,13 +250,25 @@ plt.show()
 # Save evaluation results to CSV
 results_summary = {
     'Model Type': model_type.upper(),
+    'Dataset': 'Test Set',
     'MAE (MW)': mae,
     'RMSE (MW)': rmse,
     'MAPE (%)': mape,
+    'R² Score': r2,
     'Total Parameters': sum(p.numel() for p in model.parameters() if p.requires_grad),
-    'Test Samples': len(predictions)
+    'Test Samples': len(predictions),
+    'Test Date Range': f"{split_info['test_date_range'][0]} to {split_info['test_date_range'][1]}"
 }
 
-results_file = figure_dir / f'evaluation_results_{model_type}.csv'
+results_file = figure_dir / f'test_evaluation_results_{model_type}.csv'
 pd.DataFrame([results_summary]).to_csv(results_file, index=False)
-print(f"\nEvaluation results saved to {results_file}")
+print(f"\nTest evaluation results saved to {results_file}")
+
+# Print final summary
+print("\n" + "="*60)
+print("EVALUATION COMPLETE")
+print("="*60)
+print(f"Model: {model_type.upper()}")
+print(f"Evaluated on: {len(predictions)} test samples (completely unseen during training)")
+print(f"Performance: MAE={mae:.2f} MW, RMSE={rmse:.2f} MW, MAPE={mape:.2f}%")
+print("="*60)

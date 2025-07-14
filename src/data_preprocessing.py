@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import holidays
+import json
 from pathlib import Path
 from typing import List
 import matplotlib.pyplot as plt
@@ -238,6 +239,102 @@ def prepare_data_for_training(df: pd.DataFrame, target_col: str = 'actual_load')
     return df[available_features]
 
 
+def create_train_val_test_split(df: pd.DataFrame, train_ratio: float = 0.7, val_ratio: float = 0.15):
+    """
+    Split the data into train, validation, and test sets
+    
+    Args:
+        df: DataFrame with processed features
+        train_ratio: Proportion of data for training (default: 0.7)
+        val_ratio: Proportion of data for validation (default: 0.15)
+        
+    Returns:
+        Dictionary with split information and indices
+    """
+    # Test ratio is automatically calculated
+    test_ratio = 1.0 - train_ratio - val_ratio
+    
+    assert train_ratio + val_ratio + test_ratio == 1.0, "Ratios must sum to 1.0"
+    assert all(r > 0 for r in [train_ratio, val_ratio, test_ratio]), "All ratios must be positive"
+    
+    n_samples = len(df)
+    train_end = int(n_samples * train_ratio)
+    val_end = int(n_samples * (train_ratio + val_ratio))
+    
+    # Create split info dictionary
+    split_info = {
+        'train_start': 0,
+        'train_end': train_end,
+        'val_start': train_end,
+        'val_end': val_end,
+        'test_start': val_end,
+        'test_end': n_samples,
+        'train_ratio': train_ratio,
+        'val_ratio': val_ratio,
+        'test_ratio': test_ratio,
+        'train_samples': train_end,
+        'val_samples': val_end - train_end,
+        'test_samples': n_samples - val_end
+    }
+    
+    # Add date ranges
+    split_info['train_date_range'] = (df.index[0], df.index[train_end-1])
+    split_info['val_date_range'] = (df.index[train_end], df.index[val_end-1])
+    split_info['test_date_range'] = (df.index[val_end], df.index[-1])
+    
+    return split_info
+
+
+def visualize_data_split(df: pd.DataFrame, split_info: dict, save_path: str = 'results/figures/'):
+    """
+    Visualize the train/validation/test split
+    """
+    os.makedirs(save_path, exist_ok=True)
+    
+    fig, ax = plt.subplots(figsize=(15, 6))
+    
+    # Plot the entire dataset
+    ax.plot(df.index, df['actual_load'], linewidth=0.5, color='gray', alpha=0.3)
+    
+    # Highlight different splits
+    train_data = df.iloc[split_info['train_start']:split_info['train_end']]
+    val_data = df.iloc[split_info['val_start']:split_info['val_end']]
+    test_data = df.iloc[split_info['test_start']:split_info['test_end']]
+    
+    ax.plot(train_data.index, train_data['actual_load'], linewidth=1, color='blue', label='Train', alpha=0.7)
+    ax.plot(val_data.index, val_data['actual_load'], linewidth=1, color='orange', label='Validation', alpha=0.7)
+    ax.plot(test_data.index, test_data['actual_load'], linewidth=1, color='green', label='Test', alpha=0.7)
+    
+    # Add vertical lines to separate splits
+    ax.axvline(x=df.index[split_info['train_end']], color='black', linestyle='--', alpha=0.5)
+    ax.axvline(x=df.index[split_info['val_end']], color='black', linestyle='--', alpha=0.5)
+    
+    ax.set_title('Data Split: Train / Validation / Test', fontsize=16)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Load (MW)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Add text annotations
+    train_pct = split_info['train_ratio'] * 100
+    val_pct = split_info['val_ratio'] * 100
+    test_pct = split_info['test_ratio'] * 100
+    
+    ax.text(0.17, 0.95, f'Train: {train_pct:.0f}% ({split_info["train_samples"]} samples)', 
+            transform=ax.transAxes, fontsize=11, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+    ax.text(0.50, 0.95, f'Val: {val_pct:.0f}% ({split_info["val_samples"]} samples)', 
+            transform=ax.transAxes, fontsize=11, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='orange', alpha=0.7))
+    ax.text(0.75, 0.95, f'Test: {test_pct:.0f}% ({split_info["test_samples"]} samples)', 
+            transform=ax.transAxes, fontsize=11, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_path}/data_split_visualization.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+
 if __name__ == "__main__":
     
     # Define file paths
@@ -258,6 +355,33 @@ if __name__ == "__main__":
     analyze_load_patterns(df)
     train_df = prepare_data_for_training(df)
     
-    # Save processed data
+    # Create train/val/test split (70% train, 15% val, 15% test)
+    split_info = create_train_val_test_split(train_df, train_ratio=0.7, val_ratio=0.15)
+    
+    # Print split information
+    print("\n=== Data Split Information ===")
+    print(f"Train: {split_info['train_samples']} samples ({split_info['train_ratio']*100:.0f}%)")
+    print(f"  Date range: {split_info['train_date_range'][0]} to {split_info['train_date_range'][1]}")
+    print(f"Validation: {split_info['val_samples']} samples ({split_info['val_ratio']*100:.0f}%)")
+    print(f"  Date range: {split_info['val_date_range'][0]} to {split_info['val_date_range'][1]}")
+    print(f"Test: {split_info['test_samples']} samples ({split_info['test_ratio']*100:.0f}%)")
+    print(f"  Date range: {split_info['test_date_range'][0]} to {split_info['test_date_range'][1]}")
+    
+    # Visualize the split
+    visualize_data_split(train_df, split_info)
+    
+    # Save processed data and split information
     train_df.to_csv('data/processed/load_data_processed.csv')
+    
+    # Save split information as JSON
+    
+    split_info_json = split_info.copy()
+    # Convert date tuples to strings for JSON serialization
+    for key in ['train_date_range', 'val_date_range', 'test_date_range']:
+        split_info_json[key] = [str(d) for d in split_info[key]]
+    
+    with open('data/processed/data_split_info.json', 'w') as f:
+        json.dump(split_info_json, f, indent=4)
+    
     print(f"\nProcessed data saved. Shape: {train_df.shape}")
+    print("Split information saved to data/processed/data_split_info.json")

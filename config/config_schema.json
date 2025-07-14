@@ -6,17 +6,36 @@
   "properties": {
     "data": {
       "type": "object",
-      "required": ["processed_path", "validation_split"],
+      "required": ["processed_path", "split_info_path"],
       "properties": {
         "processed_path": {
           "type": "string",
           "description": "Path to the processed CSV data file."
         },
-        "validation_split": {
+        "split_info_path": {
+          "type": "string",
+          "description": "Path to the JSON file containing data split information."
+        },
+        "train_ratio": {
           "type": "number",
-          "description": "Fraction of the data to use for validation (e.g., 0.2 for 20%).",
+          "description": "Fraction of the data to use for training (e.g., 0.7 for 70%).",
           "minimum": 0.0,
-          "maximum": 1.0
+          "maximum": 1.0,
+          "default": 0.7
+        },
+        "val_ratio": {
+          "type": "number",
+          "description": "Fraction of the data to use for validation (e.g., 0.15 for 15%).",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.15
+        },
+        "test_ratio": {
+          "type": "number",
+          "description": "Fraction of the data to use for testing (e.g., 0.15 for 15%).",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.15
         }
       }
     },
