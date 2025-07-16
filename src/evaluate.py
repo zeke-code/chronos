@@ -17,10 +17,7 @@ from dataset import EnergyLoadDataset
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def plot_full_timeline(full_df_unscaled: pd.DataFrame, test_preds_mw: np.ndarray, split_info: dict, results_dir: Path):
-    """
-    Generates the main plot of the full timeline with colored splits.
-    (This function remains unchanged)
-    """
+    """Generates the main plot of the full timeline with colored splits."""
     logging.info("Generating full timeline plot...")
     fig, ax = plt.subplots(figsize=(20, 8))
     
@@ -35,33 +32,23 @@ def plot_full_timeline(full_df_unscaled: pd.DataFrame, test_preds_mw: np.ndarray
     test_preds_series = pd.Series(test_preds_mw, index=full_df_unscaled.loc[val_end_dt:].index[:len(test_preds_mw)])
     ax.plot(test_preds_series.index, test_preds_series, label='Predicted Load (Test)', color='red', linestyle='--', linewidth=1.5)
     
-    ax.axvline(train_end_dt, color='gray', linestyle=':', linewidth=2)
-    ax.axvline(val_end_dt, color='gray', linestyle=':', linewidth=2)
+    ax.axvline(train_end_dt, color='red', linestyle=':', linewidth=2)
+    ax.axvline(val_end_dt, color='red', linestyle=':', linewidth=2)
     
     ax.set_title('Full Timeline: Model Performance', fontsize=18, pad=20)
     ax.set_xlabel('Date', fontsize=14)
     ax.set_ylabel('Energy Load (MW)', fontsize=14)
     ax.legend(fontsize=12, loc='upper left')
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    ax.set_facecolor('#f5f5f5')
-    
-    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonthday=1, interval=4))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
-    
     fig.tight_layout()
     
-    results_dir.mkdir(parents=True, exist_ok=True)
     plot_path = results_dir / 'full_timeline_predictions_plot.png'
     plt.savefig(plot_path, dpi=150)
     logging.info(f"Full timeline plot saved to {plot_path}")
-    plt.show()
+    plt.close(fig)
 
 def plot_test_set_zoom(test_actuals_series: pd.Series, test_preds_series: pd.Series, results_dir: Path):
-    """
-    Generates a detailed, zoomed-in plot of the test set predictions.
-    (This function remains unchanged)
-    """
+    """Generates a detailed, zoomed-in plot of the test set predictions."""
     logging.info("Generating zoomed-in plot for the test set...")
     fig, ax = plt.subplots(figsize=(20, 8))
 
@@ -73,29 +60,32 @@ def plot_test_set_zoom(test_actuals_series: pd.Series, test_preds_series: pd.Ser
     ax.set_ylabel('Energy Load (MW)', fontsize=14)
     ax.legend(fontsize=12, loc='upper left')
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    
-    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d %b %Y'))
-    plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
-
     fig.tight_layout()
     
     plot_path = results_dir / 'test_set_zoom_plot.png'
     plt.savefig(plot_path, dpi=150)
     logging.info(f"Zoomed-in test set plot saved to {plot_path}")
-    plt.show()
+    plt.close(fig)
 
-def evaluate(config_path: str):
-    logging.info("--- Starting Model Evaluation ---")
-    config_path = Path(config_path)
+def evaluate(config_path: Path, run_dir: Path):
+    """
+    Loads a trained model from a specific run directory and evaluates its performance.
+    """
+    logging.info(f"--- Starting Evaluation for run: {run_dir.name} ---")
+    
     with open(config_path, 'r') as f:
         config = json.load(f)
 
-    # --- 1. Load Configuration ---
+    # --- 1. Load Configuration & Define Paths ---
     data_conf, model_conf, train_conf, log_conf = config['data'], config['model'], config['training'], config['logging']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    best_model_path = Path(log_conf['checkpoint_dir']) / log_conf['best_model_name']
     
+    # The path to the model is now inside the specific run directory
+    best_model_path = run_dir / log_conf['best_model_name']
+    if not best_model_path.exists():
+        logging.error(f"Model checkpoint not found at {best_model_path}")
+        raise FileNotFoundError(f"Model checkpoint not found at {best_model_path}")
+
     # --- 2. Load Data and Scalers ---
     logging.info("Loading processed data and scalers...")
     processed_df = pd.read_csv(data_conf['processed_path'], index_col='datetime', parse_dates=True)
@@ -138,12 +128,9 @@ def evaluate(config_path: str):
             
     # Reshape predictions and actuals to be 1D arrays
     all_preds_scaled = np.concatenate(all_preds_scaled).flatten()
-    all_actuals_scaled = np.concatenate(all_actuals_scaled).flatten()
 
     # --- 5. Inverse Transform Data ---
-    logging.info("Inverse transforming predictions and actuals for metrics and plotting...")
-    
-    # Inverse transform predictions using the target_scaler
+    logging.info("Inverse transforming predictions and actuals...")
     test_preds_mw = target_scaler.inverse_transform(all_preds_scaled.reshape(-1, 1)).flatten()
     
     # Inverse transform the entire dataframe for plotting
@@ -163,7 +150,7 @@ def evaluate(config_path: str):
     test_actuals_series = test_actuals_series.iloc[:len(test_preds_mw)]
     test_preds_series = pd.Series(test_preds_mw, index=test_actuals_series.index)
     
-    # --- 6. Calculate Interpretable Metrics ---
+    # --- 6. Calculate and Log Interpretable Metrics ---
     mae_mw = np.mean(np.abs(test_preds_series.values - test_actuals_series.values))
     rmse_mw = np.sqrt(np.mean((test_preds_series.values - test_actuals_series.values)**2))
     
@@ -172,13 +159,42 @@ def evaluate(config_path: str):
     logging.info(f"Root Mean Squared Error (RMSE): {rmse_mw:.2f} MW")
     logging.info("--------------------------")
 
+    # Save metrics to a file inside the run directory
+    metrics = {'MAE_MW': mae_mw, 'RMSE_MW': rmse_mw}
+    with open(run_dir / 'test_metrics.json', 'w') as f:
+        json.dump(metrics, f, indent=4)
+
     # --- 7. Visualize Results ---
-    results_dir = Path('results')
-    plot_full_timeline(full_df_unscaled, test_preds_mw, split_info, results_dir)
-    plot_test_set_zoom(test_actuals_series, test_preds_series, results_dir)
+    # Plots are now saved directly into the run directory
+    plot_full_timeline(full_df_unscaled, test_preds_mw, split_info, results_dir=run_dir)
+    plot_test_set_zoom(test_actuals_series, test_preds_series, results_dir=run_dir)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate a trained forecasting model.")
     parser.add_argument('--config', type=str, help="Path to the configuration JSON file.", default="config/config.json")
+    parser.add_argument('--run_dir', type=str, help="(Optional) Path to a specific run directory to evaluate. If not provided, the latest run will be used.")
     args = parser.parse_args()
-    evaluate(config_path=args.config)
+
+    run_dir_to_evaluate = None
+    if args.run_dir:
+        # Use the directory specified by the user
+        run_dir_to_evaluate = Path(args.run_dir)
+    else:
+        # Automatically find the latest run directory
+        with open(args.config, 'r') as f:
+            config = json.load(f)
+        log_dir = Path(config['logging']['log_dir'])
+        
+        if not log_dir.exists():
+            logging.error(f"Log directory not found at {log_dir}. Please train a model first.")
+            exit()
+            
+        all_runs = [d for d in log_dir.iterdir() if d.is_dir()]
+        if not all_runs:
+            logging.error(f"No training runs found in {log_dir}. Please train a model first.")
+            exit()
+            
+        latest_run = max(all_runs, key=lambda d: d.stat().st_mtime)
+        run_dir_to_evaluate = latest_run
+
+    evaluate(config_path=Path(args.config), run_dir=run_dir_to_evaluate)

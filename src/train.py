@@ -1,27 +1,29 @@
 import argparse
 import json
 import logging
+from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import pandas as pd
 from pathlib import Path
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from model import get_model
 from dataset import EnergyLoadDataset
 
-# Configure basic logging
+# Configure basic logging to the console
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class Trainer:
     """
-    A class to encapsulate the training and validation logic.
+    A class to encapsulate the training and validation logic with TensorBoard logging.
     """
     def __init__(self, config_path: Path):
         """
-        Initializes the Trainer.
+        Initializes the Trainer, sets up unique directories, and the TensorBoard writer.
         
         Args:
             config_path (Path): Path to the JSON configuration file.
@@ -31,11 +33,10 @@ class Trainer:
             self.config = json.load(f)
 
         self._load_config()
+        self._setup_logging()
         self._prepare_data()
         self._build_model()
-        
-        # Setup checkpoint directory
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._log_initial_setup()
 
     def _load_config(self):
         """Loads parameters from the config file."""
@@ -48,13 +49,26 @@ class Trainer:
         self.batch_size = self.train_conf['batch_size']
         self.epochs = self.train_conf['epochs']
         self.learning_rate = self.train_conf['learning_rate']
-        self.checkpoint_dir = Path(self.log_conf['checkpoint_dir'])
-        self.best_model_path = self.checkpoint_dir / self.log_conf['best_model_name']
         
-        # --- NEW: Load stopping criteria configurations ---
         self.early_stopping_conf = self.train_conf.get('early_stopping', {'enabled': False})
         self.target_loss_conf = self.train_conf.get('target_loss', {'enabled': False})
-        # ----------------------------------------------------
+
+    def _setup_logging(self):
+        """Creates a unique directory for the run and initializes SummaryWriter."""
+        model_type = self.model_conf['type']
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.run_name = f"{model_type}_{timestamp}"
+        
+        # All artifacts for this run will be stored here
+        self.run_dir = Path(self.log_conf['log_dir']) / self.run_name
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Redefine checkpoint path to be inside the unique run directory
+        self.best_model_path = self.run_dir / self.log_conf['best_model_name']
+        
+        # Initialize TensorBoard SummaryWriter
+        self.writer = SummaryWriter(log_dir=self.run_dir)
+        logging.info(f"Run artifacts will be saved in: {self.run_dir}")
 
     def _prepare_data(self):
         """Loads processed data and creates DataLoaders."""
@@ -95,6 +109,32 @@ class Trainer:
         self.criterion = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
+    def _log_initial_setup(self):
+        """Logs hyperparameters and model architecture to TensorBoard."""
+        # Log hyperparameters as text
+        hparams_dict = {
+            'model_type': self.model_conf['type'],
+            'learning_rate': self.learning_rate,
+            'batch_size': self.batch_size,
+            'sequence_length': self.sequence_length,
+            'dropout': self.model_conf['dropout'],
+            'hidden_size': self.model_conf[self.model_conf['type']]['hidden_size'],
+            'num_layers': self.model_conf[self.model_conf['type']]['num_layers'],
+        }
+        # Use a Markdown-formatted table for nice display in TensorBoard
+        hparams_md = "## Hyperparameters\n| Parameter | Value |\n|---|---|\n"
+        for key, val in hparams_dict.items():
+            hparams_md += f"| {key} | {val} |\n"
+        self.writer.add_text('Configuration/Hyperparameters', hparams_md)
+
+        # Log the model's text architecture
+        model_arch_text = f"<pre>{self.model}</pre>"
+        self.writer.add_text('Configuration/Model_Architecture', model_arch_text)
+
+        # Log the model graph
+        dummy_input = torch.randn(self.batch_size, self.sequence_length, self.input_size).to(self.device)
+        self.writer.add_graph(self.model, dummy_input)
+        
     def _train_epoch(self):
         """Performs one epoch of training."""
         self.model.train()
@@ -135,7 +175,12 @@ class Trainer:
             
             logging.info(f"Epoch {epoch+1}/{self.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
             
-            # Save the best model based on validation loss
+            # --- TENSORBOARD LOGGING ---
+            self.writer.add_scalar('Loss/train', train_loss, epoch)
+            self.writer.add_scalar('Loss/validation', val_loss, epoch)
+            self.writer.add_scalars('Loss/Combined', {'train': train_loss, 'validation': val_loss}, epoch)
+            self.writer.add_scalar('Learning_Rate', self.optimizer.param_groups[0]['lr'], epoch)
+            
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(self.model.state_dict(), self.best_model_path)
@@ -156,14 +201,13 @@ class Trainer:
                 current_loss = val_loss if metric == 'validation' else train_loss
                 
                 if target and current_loss <= target:
-                    if self.target_loss_conf.get('verbose', True):
-                        logging.info(f"Target {metric} loss of {target} reached. Stopping training.")
-                    # Ensure the final model is saved if it's the best
+                    logging.info(f"Target {metric} loss of {target} reached. Stopping training.")
                     if val_loss < best_val_loss:
                          torch.save(self.model.state_dict(), self.best_model_path)
                     break
                 
         logging.info("Training finished.")
+        self.writer.close()
 
 
 def main():

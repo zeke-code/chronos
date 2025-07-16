@@ -2,8 +2,7 @@
 
 **Chronos** is a small ML model to make forecast predictions about the energy load in a certain country.
 
-The example provided in this repo trains the model on Italy's Energy Consumption dataset, provided by [Terna](https://dati.terna.it/en/). You can find the raw data under the
-`raw/` folder. The data is then processed and a lot of features are added to make the model more accurate in its predictions.
+The example provided in this repo trains the model on Italy's Energy Consumption dataset, provided by [Terna](https://dati.terna.it/en/download-center). You can find the raw data under the `raw/` folder. The data is then processed and a lot of features are added to make the model more accurate in its predictions.
 
 ## How to run
 
