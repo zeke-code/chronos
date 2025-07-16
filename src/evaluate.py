@@ -8,7 +8,6 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 from joblib import load as joblib_load
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 
 from model import get_model
 from dataset import EnergyLoadDataset
