@@ -1,43 +1,47 @@
-import numpy as np
 import torch
+import pandas as pd
+import numpy as np
 from torch.utils.data import Dataset
 
-def create_sequences(features, target, seq_length):
+class EnergyLoadDataset(Dataset):
     """
-    Transforms a time series dataset into sequences.
-
-    Args:
-        features (np.array): Array of input features.
-        target (np.array): Array of target values.
-        seq_length (int): The length of the sequences.
-
-    Returns:
-        Tuple[np.array, np.array]: A tuple containing the sequences (X) and their corresponding targets (y).
+    Custom PyTorch Dataset for creating sequences from time-series data.
     """
-    xs, ys = [], []
-    for i in range(len(features) - seq_length):
-        # A sequence is 'seq_length' consecutive feature sets
-        x = features[i:(i + seq_length)]
-        # The target is the value immediately after the sequence
-        y = target[i + seq_length]
-        xs.append(x)
-        ys.append(y)
-    return np.array(xs), np.array(ys)
+    def __init__(self, data: pd.DataFrame, sequence_length: int, target_col: str):
+        """
+        Args:
+            data (pd.DataFrame): The dataframe with features and target.
+            sequence_length (int): The length of the input sequence.
+            target_col (str): The name of the target column to predict.
+        """
+        self.sequence_length = sequence_length
 
-
-class TimeSeriesDataset(Dataset):
-    """
-    Custom PyTorch Dataset for time series data.
-    """
-    def __init__(self, X, y):
-        # Convert to PyTorch tensors
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32)
+        # 1. Create a bucket for the answers (target)
+        self.target_data = data[target_col].values.astype(np.float32)
+        
+        # 2. Create a bucket for the clues (features)
+        self.feature_data = data.drop(columns=[target_col]).values.astype(np.float32)
 
     def __len__(self):
-        # The number of samples is the number of sequences we have
-        return len(self.X)
+        """
+        Returns the total number of possible sequences in the dataset.
+        """
+        return len(self.feature_data) - self.sequence_length
 
-    def __getitem__(self, idx):
-        # Returns one sample: a sequence and its corresponding target
-        return self.X[idx], self.y[idx]
+    def __getitem__(self, idx: int):
+        """
+        Retrieves a single sample (a sequence and its corresponding target) from the dataset.
+        
+        Args:
+            idx (int): The index of the sample.
+            
+        Returns:
+            A tuple of (sequence, target), both as PyTorch tensors.
+        """
+        # The input sequence (X) starts at the given index and spans 'sequence_length' timesteps.
+        sequence = self.feature_data[idx : idx + self.sequence_length]
+        
+        # The target value (y) is the 'total_load_mw' value from the timestep immediately after the sequence ends.
+        target = self.target_data[idx + self.sequence_length]
+
+        return torch.from_numpy(sequence), torch.tensor(target).float()

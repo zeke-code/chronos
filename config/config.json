@@ -14,7 +14,13 @@
     "early_stopping": {
       "enabled": true,
       "patience": 10,
-      "min_delta": 0.00001,
+      "min_delta": 1e-5,
+      "verbose": true
+    },
+    "target_loss": {
+      "enabled": true,
+      "target_val_loss": 0.00005,
+      "metric": "validation",
       "verbose": true
     }
   },
@@ -23,12 +29,10 @@
     "input_size": -1,
     "output_size": 1,
     "dropout": 0.2,
-
     "lstm": {
       "hidden_size": 128,
       "num_layers": 2
     },
-
     "gru": {
       "hidden_size": 128,
       "num_layers": 2

@@ -1,387 +1,264 @@
+import argparse
+import json
+import logging
 import pandas as pd
 import numpy as np
-import os
 import holidays
-import json
 from pathlib import Path
-from typing import List
-import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from joblib import dump
 
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def load_ang_merge_data(file_paths: List[str]) -> pd.DataFrame:
+class DataPreprocessor:
     """
-    Load and merge multiple CSV files
-    
-    Args:
-        file_paths: List of paths to CSV files
-        
-    Returns:
-        Merged DataFrame with all data
+    A class to preprocess time-series energy load data for LSTM models.
     """
-    dfs = []
-    
-    for file_path in file_paths:
-        print(f"Loading {file_path}...")
+    def __init__(self, config_path: Path):
+        """
+        Initializes the preprocessor with configuration.
         
-        # Skipfooter and engine to ignore garbage lines at the end of our datasets
-        df = pd.read_csv(
-            file_path,
-            parse_dates=['Date'],
-            dayfirst=True,
-            decimal=',',
-            thousands='.',
-            skipfooter=2,  # Ignore the last 2 lines of the file as they're garbage
-            engine='python' # skipfooter requires the python engine
-        )
+        Args:
+            config_path (Path): Path to the JSON configuration file.
+        """
+        logging.info("Initializing DataPreprocessor.")
+        with open(config_path, 'r') as f:
+            self.config = json.load(f)
+        self.data_config = self.config.get('data', {})
+        self.raw_data = None
+        self.processed_data = None
+        # Initialize two separate scalers for features and target ---
+        # This is a more robust approach that prevents any data leakage between
+        # the scale of the features and the scale of the target.
+        self.feature_scaler = MinMaxScaler()
+        self.target_scaler = MinMaxScaler()
+
+    def load_data(self, raw_data_dir: Path) -> 'DataPreprocessor':
+        """
+        Loads and merges all raw CSV data from a specified directory.
         
-        # Clean column names as we want to rename them
-        df.columns = df.columns.str.strip()
+        Args:
+            raw_data_dir (Path): The directory path containing the raw CSV files.
         
-        # Rename columns for consistency
-        column_mapping = {
-            'Total Load [MW]': 'actual_load',
-            'Forecast Total Load [MW]': 'forecast_load',
-            'Bidding Zone': 'bidding_zone'
+        Returns:
+            self: The instance of the DataPreprocessor.
+        """
+        # This method is correct and remains unchanged.
+        logging.info(f"Loading and merging raw data from directory: {raw_data_dir}...")
+        
+        csv_files = list(raw_data_dir.glob('*.csv'))
+        if not csv_files:
+            logging.error(f"No CSV files found in directory {raw_data_dir}.")
+            raise FileNotFoundError(f"No CSV files found in {raw_data_dir}")
+
+        all_dfs = []
+        try:
+            for file_path in sorted(csv_files):
+                logging.info(f"Reading file: {file_path.name}")
+                df = pd.read_csv(
+                    file_path,
+                    usecols=[0, 1, 2, 3],
+                    on_bad_lines='skip',
+                    engine='python',
+                    skipfooter=2
+                )
+                all_dfs.append(df)
+            
+            self.raw_data = pd.concat(all_dfs, ignore_index=True)
+            logging.info(f"Successfully loaded and merged {len(all_dfs)} files. Total rows: {len(self.raw_data)}")
+        except Exception as e:
+            logging.error(f"An error occurred while loading data: {e}")
+            raise
+        return self
+
+    def clean_and_prepare_data(self) -> 'DataPreprocessor':
+        """
+        Cleans the raw data by renaming columns, converting data types,
+        and handling the datetime index.
+        
+        Returns:
+            self: The instance of the DataPreprocessor.
+        """
+        # This method is correct and remains unchanged.
+        if self.raw_data is None:
+            logging.error("Raw data is not loaded. Please call load_data() first.")
+            return self
+
+        logging.info("Cleaning and preparing data...")
+        
+        self.raw_data.columns = [
+            'datetime', 'total_load_mw', 'forecast_total_load_mw', 'bidding_zone'
+        ]
+
+        logging.info("Dropping 'bidding_zone' and 'forecast_total_load_mw' columns.")
+        self.raw_data = self.raw_data.drop(columns=['bidding_zone', 'forecast_total_load_mw'])
+        
+        self.raw_data['datetime'] = pd.to_datetime(self.raw_data['datetime'], format='%d/%m/%Y %H:%M:%S')
+
+        for col in ['total_load_mw']:
+            self.raw_data[col] = self.raw_data[col].str.replace(',', '.', regex=False).astype(float)
+            
+        self.raw_data = self.raw_data.set_index('datetime').sort_index()
+        self.raw_data.interpolate(method='time', inplace=True)
+        
+        self.processed_data = self.raw_data.copy()
+        logging.info("Data cleaning and preparation complete.")
+        return self
+        
+    def create_features(self) -> 'DataPreprocessor':
+        """
+        Engineers time-based, cyclical, lag, and rolling features from the datetime index.
+        
+        Returns:
+            self: The instance of the DataPreprocessor.
+        """
+        if self.processed_data is None:
+            logging.error("Data not cleaned. Please run create_features() first.")
+            return self
+
+        logging.info("Starting advanced feature engineering...")
+        df = self.processed_data
+        target_col = 'total_load_mw'
+        
+        # 1. Calendar-based features
+        logging.info("Creating calendar features (weekend, holiday)...")
+        df['day_of_week'] = df.index.dayofweek
+        df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
+        
+        # --- NEW: Add holiday feature --- (Your logic was good, just integrated here)
+        it_holidays = holidays.country_holidays('IT', years=df.index.year.unique())
+        df['is_holiday'] = df.index.to_series().dt.date.isin(it_holidays).astype(int)
+        
+        # 2. Cyclical time-based features
+        logging.info("Creating cyclical features for time components...")
+        df['hour'] = df.index.hour
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+        df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
+        df['day_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
+        
+        # We no longer need the original integer-based time columns
+        df.drop(columns=['hour', 'day_of_week'], inplace=True)
+        
+        # 3. Lag features (Provides historical context)
+        logging.info("Creating lag features (past load values)...")
+        # 96 intervals = 1 day (24h * 4), 672 intervals = 1 week (96 * 7)
+        lag_steps = [96, 672] 
+        for lag in lag_steps:
+            df[f'load_lag_{lag}'] = df[target_col].shift(lag)
+
+        # 4. Rolling Window features (Provides recent trend context)
+        logging.info("Creating rolling window features (recent trend and volatility)...")
+        window_size = 96 # 24-hour window
+        df[f'load_rolling_mean_{window_size}'] = df[target_col].rolling(window=window_size).mean()
+        df[f'load_rolling_std_{window_size}'] = df[target_col].rolling(window=window_size).std()
+        
+        # 5. Drop rows with NaN values created by lag/rolling features
+        logging.info(f"Shape before dropping NaNs: {df.shape}")
+        df.dropna(inplace=True)
+        logging.info(f"Shape after dropping NaNs: {df.shape}")
+
+        self.processed_data = df
+        logging.info("Advanced feature engineering complete.")
+        return self
+
+    def split_and_scale_data(self) -> 'DataPreprocessor':
+        """
+        Splits data chronologically into training, validation, and test sets
+        and scales the features and target based on the training set.
+        
+        Returns:
+            self: The instance of the DataPreprocessor.
+        """
+        if self.processed_data is None:
+            logging.error("Processed data not available. Please run previous steps.")
+            return self
+        
+        logging.info("Splitting and scaling data with separate scalers...")
+        
+        # Define which columns are features and which is the target
+        target_col = 'total_load_mw'
+        feature_cols = [col for col in self.processed_data.columns if col != target_col]
+        
+        n = len(self.processed_data)
+        train_end_idx = int(n * self.data_config['train_ratio'])
+        val_end_idx = train_end_idx + int(n * self.data_config['val_ratio'])
+
+        train_df = self.processed_data.iloc[:train_end_idx]
+        val_df = self.processed_data.iloc[train_end_idx:val_end_idx]
+        test_df = self.processed_data.iloc[val_end_idx:]
+
+        logging.info(f"Data split into: Train ({len(train_df)}), Validation ({len(val_df)}), Test ({len(test_df)}) samples.")
+
+        # Fit the feature scaler ONLY on the training data's features
+        self.feature_scaler.fit(train_df[feature_cols])
+        # Transform the features of the entire dataset
+        self.processed_data[feature_cols] = self.feature_scaler.transform(self.processed_data[feature_cols])
+
+        # Fit the target scaler ONLY on the training data's target
+        # Scaler expects a 2D array, so we reshape with [[]]
+        self.target_scaler.fit(train_df[[target_col]])
+        # Transform the target of the entire dataset
+        self.processed_data[target_col] = self.target_scaler.transform(self.processed_data[[target_col]])
+
+        logging.info("Data scaling complete.")
+
+        # Save both scalers to disk for later use during inference
+        output_dir = Path(self.data_config['processed_path']).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        feature_scaler_path = output_dir / 'feature_scaler.joblib'
+        target_scaler_path = output_dir / 'target_scaler.joblib'
+        dump(self.feature_scaler, feature_scaler_path)
+        dump(self.target_scaler, target_scaler_path)
+        logging.info(f"Feature and Target scalers saved to {output_dir}")
+        
+        # This part for saving the split info remains the same
+        split_info = {
+            "train_start_date": str(train_df.index.min()), "train_end_date": str(train_df.index.max()),
+            "val_start_date": str(val_df.index.min()), "val_end_date": str(val_df.index.max()),
+            "test_start_date": str(test_df.index.min()), "test_end_date": str(test_df.index.max()),
+            "train_size": len(train_df), "val_size": len(val_df), "test_size": len(test_df)
         }
-        df = df.rename(columns=column_mapping)
+        split_info_path = Path(self.data_config['split_info_path'])
+        split_info_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(split_info_path, 'w') as f:
+            json.dump(split_info, f, indent=4)
+            
+        return self
 
-        # Drop useless bidding zone column
-        df = df.drop(columns=['bidding_zone'])
-        
-        # Convert to numeric (in case any issues with decimal conversion)
-        for col in ['actual_load', 'forecast_load']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        dfs.append(df)
-    
-    # Concatenate all dataframes
-    merged_df = pd.concat(dfs, ignore_index=True)
-    
-    # Handle any rows that might have failed numeric conversion
-    merged_df.dropna(inplace=True)
+    def save_processed_data(self):
+        """
+        Saves the fully processed and scaled DataFrame to a CSV file.
+        """
+        # This method is correct and remains unchanged.
+        if self.processed_data is None:
+            logging.error("No processed data to save.")
+            return
 
-    # Sort by date and set as index
-    merged_df = merged_df.sort_values('Date').set_index('Date')
-    
-    # Remove duplicates if any
-    merged_df = merged_df[~merged_df.index.duplicated(keep='first')]
-    
-    print(f"\nMerged data shape: {merged_df.shape}")
-    print(f"Date range: {merged_df.index.min()} to {merged_df.index.max()}")
-    print(f"Missing values: {merged_df.isnull().sum().sum()}")
-    
-    return merged_df
+        processed_path = Path(self.data_config['processed_path'])
+        processed_path.parent.mkdir(parents=True, exist_ok=True)
+        self.processed_data.to_csv(processed_path)
+        logging.info(f"Processed data successfully saved to {processed_path}.")
 
 
-def create_load_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create features specifically for load forecasting
-    """
-    df = df.copy()
+def main():
+    """Main function to run the data preprocessing pipeline."""
+    # This function is correct and remains unchanged.
+    parser = argparse.ArgumentParser(description="Preprocess energy load data for LSTM models.")
+    parser.add_argument('--raw_data_dir', type=str, help="Path to the directory containing raw data CSV files.", default="data/raw/")
+    parser.add_argument('--config_path', type=str, help="Path to the configuration JSON file.", default="config/config.json")
     
-    # Time-based features
-    df['hour'] = df.index.hour
-    df['day_of_week'] = df.index.dayofweek
-    df['day_of_month'] = df.index.day
-    df['month'] = df.index.month
-    df['quarter'] = df.index.quarter
-    df['year'] = df.index.year
-    df['is_weekend'] = (df.index.dayofweek >= 5).astype(int)
-    
-    # Use the holidays library for an automated list of holidays and mark them
-    start_year = df.index.min().year
-    end_year = df.index.max().year
-    it_holidays = holidays.Italy(years=range(start_year, end_year + 1))
-    df['is_holiday'] = df.index.normalize().isin(it_holidays).astype(int)
-    
-    # Cyclical encoding for time features
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-    df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
-    df['day_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
-    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
-    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
-    
-    # Lag features (previous load values)
-    lag_steps = [1, 2, 3, 6, 12, 24, 48, 96, 168]
-    for lag in lag_steps:
-        df[f'load_lag_{lag}h'] = df['actual_load'].shift(lag)
-    
-    # Rolling statistics
-    rolling_windows = [24, 48, 168]
-    for window in rolling_windows:
-        df[f'load_rolling_mean_{window}h'] = df['actual_load'].rolling(window=window).mean()
-        df[f'load_rolling_std_{window}h'] = df['actual_load'].rolling(window=window).std()
-        df[f'load_rolling_min_{window}h'] = df['actual_load'].rolling(window=window).min()
-        df[f'load_rolling_max_{window}h'] = df['actual_load'].rolling(window=window).max()
-    
-    # Load from same hour previous days
-    for days_back in [1, 7]:
-        df[f'load_same_hour_{days_back}d_ago'] = df['actual_load'].shift(24 * days_back)
-    
-    # Drop rows with NaN values created by lag/rolling features
-    df = df.dropna()
-    
-    return df
+    args = parser.parse_args()
 
+    preprocessor = DataPreprocessor(config_path=Path(args.config_path))
+    preprocessor.load_data(raw_data_dir=Path(args.raw_data_dir)) \
+                .clean_and_prepare_data() \
+                .create_features() \
+                .split_and_scale_data() \
+                .save_processed_data()
+    
+    logging.info("Data preprocessing pipeline finished successfully.")
 
-def analyze_load_patterns(df: pd.DataFrame, save_path: str = 'results/figures/'):
-    """
-    Analyze and visualize load patterns
-    """
-    os.makedirs(save_path, exist_ok=True)
-
-    # Create a figure and a grid of subplots (3 rows, 2 columns).
-    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
-    
-    # Panel (0, 0): Full Time Series Plot
-    # Shows the overall trend and seasonality over the entire dataset duration.
-    axes[0, 0].plot(df.index, df['actual_load'], linewidth=0.5, alpha=0.7)
-    axes[0, 0].set_title('Electricity Load Over Time')
-    axes[0, 0].set_xlabel('Date')
-    axes[0, 0].set_ylabel('Load (MW)')
-    
-    # Panel (0, 1): Histogram of Load Values
-    # Shows the distribution of the energy load, revealing common and extreme values.
-    axes[0, 1].hist(df['actual_load'], bins=50, edgecolor='black', alpha=0.7)
-    axes[0, 1].set_title('Load Distribution')
-    axes[0, 1].set_xlabel('Load (MW)')
-    axes[0, 1].set_ylabel('Frequency')
-    
-    # Panel (1, 0): Average Daily Profile
-    # Groups data by hour to show the typical 24-hour energy consumption cycle.
-    hourly_avg = df.groupby('hour')['actual_load'].mean()
-    hourly_std = df.groupby('hour')['actual_load'].std()
-    axes[1, 0].plot(hourly_avg.index, hourly_avg.values, marker='o', label='Average')
-    axes[1, 0].fill_between(hourly_avg.index, 
-                           hourly_avg - hourly_std, 
-                           hourly_avg + hourly_std, 
-                           alpha=0.3, label='±1 STD')
-    axes[1, 0].set_title('Average Load by Hour of Day')
-    axes[1, 0].set_xlabel('Hour')
-    axes[1, 0].set_ylabel('Load (MW)')
-    axes[1, 0].set_xticks(range(0, 24, 2))
-    axes[1, 0].legend()
-    
-    # Panel (1, 1): Average Weekly Profile
-    # Groups data by day of the week to show the difference between weekdays and weekends.
-    days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    daily_avg = df.groupby('day_of_week')['actual_load'].mean()
-    daily_std = df.groupby('day_of_week')['actual_load'].std()
-    x_pos = range(7)
-    axes[1, 1].bar(x_pos, daily_avg.values, yerr=daily_std.values, capsize=5)
-    axes[1, 1].set_title('Average Load by Day of Week')
-    axes[1, 1].set_xticks(x_pos)
-    axes[1, 1].set_xticklabels(days)
-    axes[1, 1].set_ylabel('Load (MW)')
-    
-    # Panel (2, 0): Average Monthly (Seasonal) Profile
-    # Groups data by month to visualize the annual seasonal pattern (e.g., summer/winter peaks).
-    monthly_avg = df.groupby('month')['actual_load'].mean()
-    axes[2, 0].plot(monthly_avg.index, monthly_avg.values, marker='o')
-    axes[2, 0].set_title('Average Load by Month')
-    axes[2, 0].set_xlabel('Month')
-    axes[2, 0].set_ylabel('Load (MW)')
-    axes[2, 0].set_xticks(range(1, 13))
-    
-    # Panel (2, 1): Weekday vs. Weekend Daily Profile
-    # Overlays the hourly profiles for weekdays and weekends for direct comparison.
-    weekend_hourly = df[df['is_weekend'] == 1].groupby('hour')['actual_load'].mean()
-    weekday_hourly = df[df['is_weekend'] == 0].groupby('hour')['actual_load'].mean()
-    axes[2, 1].plot(weekend_hourly.index, weekend_hourly.values, marker='o', label='Weekend')
-    axes[2, 1].plot(weekday_hourly.index, weekday_hourly.values, marker='s', label='Weekday')
-    axes[2, 1].set_title('Load Pattern: Weekday vs Weekend')
-    axes[2, 1].set_xlabel('Hour')
-    axes[2, 1].set_ylabel('Load (MW)')
-    axes[2, 1].legend()
-    axes[2, 1].set_xticks(range(0, 24, 2))
-    
-    plt.tight_layout()
-    plt.savefig(f'{save_path}/load_analysis.png', dpi=300, bbox_inches='tight')
-    plt.show()
-    
-    print("\n=== Load Statistics ===")
-    print(f"Average load: {df['actual_load'].mean():.2f} MW")
-    print(f"Peak load: {df['actual_load'].max():.2f} MW")
-    print(f"Minimum load: {df['actual_load'].min():.2f} MW")
-    print(f"Standard deviation: {df['actual_load'].std():.2f} MW")
-
-
-def prepare_data_for_training(df: pd.DataFrame, target_col: str = 'actual_load') -> pd.DataFrame:
-    """
-    This function selects the final columns for the model and appends them in the final dataset.
-
-    We can add or remove column names if we want to modify the final dataset.
-    """
-    feature_columns = [
-        # Time features
-        'hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos',
-        # Calendar features
-        'is_weekend', 'is_holiday',
-        # Memory features (lags)
-        'load_lag_1h', 'load_lag_2h', 'load_lag_3h', 'load_lag_6h', 
-        'load_lag_12h', 'load_lag_24h', 'load_lag_48h', 'load_lag_168h',
-        # Rolling stats
-        'load_rolling_mean_24h', 'load_rolling_std_24h',
-        'load_rolling_mean_48h', 'load_rolling_std_48h',
-        'load_rolling_mean_168h', 'load_rolling_std_168h',
-        # Past memory features
-        'load_same_hour_1d_ago', 'load_same_hour_7d_ago',
-    ]
-    
-    # Append all the feature columns to our final dataset.
-    feature_columns.append(target_col)
-    
-    # Final list that includes columns that are both in my list and in the dataframe to avoid typos.
-    available_features = [col for col in feature_columns if col in df.columns]
-    
-    return df[available_features]
-
-
-def create_train_val_test_split(df: pd.DataFrame, train_ratio: float = 0.7, val_ratio: float = 0.15):
-    """
-    Split the data into train, validation, and test sets
-    
-    Args:
-        df: DataFrame with processed features
-        train_ratio: Proportion of data for training (default: 0.7)
-        val_ratio: Proportion of data for validation (default: 0.15)
-        
-    Returns:
-        Dictionary with split information and indices
-    """
-    # Test ratio is automatically calculated
-    test_ratio = 1.0 - train_ratio - val_ratio
-    
-    assert train_ratio + val_ratio + test_ratio == 1.0, "Ratios must sum to 1.0"
-    assert all(r > 0 for r in [train_ratio, val_ratio, test_ratio]), "All ratios must be positive"
-    
-    n_samples = len(df)
-    train_end = int(n_samples * train_ratio)
-    val_end = int(n_samples * (train_ratio + val_ratio))
-    
-    # Create split info dictionary
-    split_info = {
-        'train_start': 0,
-        'train_end': train_end,
-        'val_start': train_end,
-        'val_end': val_end,
-        'test_start': val_end,
-        'test_end': n_samples,
-        'train_ratio': train_ratio,
-        'val_ratio': val_ratio,
-        'test_ratio': test_ratio,
-        'train_samples': train_end,
-        'val_samples': val_end - train_end,
-        'test_samples': n_samples - val_end
-    }
-    
-    # Add date ranges
-    split_info['train_date_range'] = (df.index[0], df.index[train_end-1])
-    split_info['val_date_range'] = (df.index[train_end], df.index[val_end-1])
-    split_info['test_date_range'] = (df.index[val_end], df.index[-1])
-    
-    return split_info
-
-
-def visualize_data_split(df: pd.DataFrame, split_info: dict, save_path: str = 'results/figures/'):
-    """
-    Visualize the train/validation/test split
-    """
-    os.makedirs(save_path, exist_ok=True)
-    
-    fig, ax = plt.subplots(figsize=(15, 6))
-    
-    # Plot the entire dataset
-    ax.plot(df.index, df['actual_load'], linewidth=0.5, color='gray', alpha=0.3)
-    
-    # Highlight different splits
-    train_data = df.iloc[split_info['train_start']:split_info['train_end']]
-    val_data = df.iloc[split_info['val_start']:split_info['val_end']]
-    test_data = df.iloc[split_info['test_start']:split_info['test_end']]
-    
-    ax.plot(train_data.index, train_data['actual_load'], linewidth=1, color='blue', label='Train', alpha=0.7)
-    ax.plot(val_data.index, val_data['actual_load'], linewidth=1, color='orange', label='Validation', alpha=0.7)
-    ax.plot(test_data.index, test_data['actual_load'], linewidth=1, color='green', label='Test', alpha=0.7)
-    
-    # Add vertical lines to separate splits
-    ax.axvline(x=df.index[split_info['train_end']], color='black', linestyle='--', alpha=0.5)
-    ax.axvline(x=df.index[split_info['val_end']], color='black', linestyle='--', alpha=0.5)
-    
-    ax.set_title('Data Split: Train / Validation / Test', fontsize=16)
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Load (MW)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Add text annotations
-    train_pct = split_info['train_ratio'] * 100
-    val_pct = split_info['val_ratio'] * 100
-    test_pct = split_info['test_ratio'] * 100
-    
-    ax.text(0.17, 0.95, f'Train: {train_pct:.0f}% ({split_info["train_samples"]} samples)', 
-            transform=ax.transAxes, fontsize=11, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
-    ax.text(0.50, 0.95, f'Val: {val_pct:.0f}% ({split_info["val_samples"]} samples)', 
-            transform=ax.transAxes, fontsize=11, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='orange', alpha=0.7))
-    ax.text(0.75, 0.95, f'Test: {test_pct:.0f}% ({split_info["test_samples"]} samples)', 
-            transform=ax.transAxes, fontsize=11, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
-    
-    plt.tight_layout()
-    plt.savefig(f'{save_path}/data_split_visualization.png', dpi=300, bbox_inches='tight')
-    plt.show()
-
-
-if __name__ == "__main__":
-    
-    # Define file paths
-    file_paths = [
-        'data/raw/italy_energy_consumption_2022.csv',
-        'data/raw/italy_energy_consumption_2023.csv',
-        'data/raw/italy_energy_consumption_2024.csv',
-        'data/raw/italy_energy_consumption_2025.csv'
-    ]
-    
-    # Create the necessary directories if they don't exist
-    Path('data/processed').mkdir(parents=True, exist_ok=True)
-    Path('results/figures').mkdir(parents=True, exist_ok=True)
-    
-    df = load_ang_merge_data(file_paths)
-    df = create_load_features(df)
-    
-    analyze_load_patterns(df)
-    train_df = prepare_data_for_training(df)
-    
-    # Create train/val/test split (70% train, 15% val, 15% test)
-    split_info = create_train_val_test_split(train_df, train_ratio=0.7, val_ratio=0.15)
-    
-    # Print split information
-    print("\n=== Data Split Information ===")
-    print(f"Train: {split_info['train_samples']} samples ({split_info['train_ratio']*100:.0f}%)")
-    print(f"  Date range: {split_info['train_date_range'][0]} to {split_info['train_date_range'][1]}")
-    print(f"Validation: {split_info['val_samples']} samples ({split_info['val_ratio']*100:.0f}%)")
-    print(f"  Date range: {split_info['val_date_range'][0]} to {split_info['val_date_range'][1]}")
-    print(f"Test: {split_info['test_samples']} samples ({split_info['test_ratio']*100:.0f}%)")
-    print(f"  Date range: {split_info['test_date_range'][0]} to {split_info['test_date_range'][1]}")
-    
-    # Visualize the split
-    visualize_data_split(train_df, split_info)
-    
-    # Save processed data and split information
-    train_df.to_csv('data/processed/load_data_processed.csv')
-    
-    # Save split information as JSON
-    
-    split_info_json = split_info.copy()
-    # Convert date tuples to strings for JSON serialization
-    for key in ['train_date_range', 'val_date_range', 'test_date_range']:
-        split_info_json[key] = [str(d) for d in split_info[key]]
-    
-    with open('data/processed/data_split_info.json', 'w') as f:
-        json.dump(split_info_json, f, indent=4)
-    
-    print(f"\nProcessed data saved. Shape: {train_df.shape}")
-    print("Split information saved to data/processed/data_split_info.json")
+if __name__ == '__main__':
+    main()
