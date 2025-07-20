@@ -34,3 +34,29 @@ on your browser to consult Tensorboard graphs.
 ```bash
 tensorboard logdir=results
 ```
+
+## Experiments
+
+I ran some experiments on my model, experimenting with hyperparameters and the two different architectures I've implemented (GRU and LSTM).
+
+| Experiment Name          | Model Type | Key Parameters Changed       | Final Val Loss | Test MAE (MW) | Test RMSE (MW) |
+| :----------------------- | :--------- | :--------------------------- | :------------- | :------------ | :------------- |
+| **1. Baseline LSTM**     | `lstm`     | none, target value disabled  | _0.000134_     | _3219.23 MW_  | _5006.08 MW_   |
+| **2. GRU Model**         | `gru`      | Switched model type to `gru` | _0.000112_     | _3188.73 MW_  | _4986.66 MW_   |
+| **3. Deeper LSTM**       | `lstm`     | `num_layers=4`               | _0.000168_     | _3244.43 MW_  | _5077.91 MW_   |
+| **4. Wider LSTM**        | `lstm`     | `hidden_size=512`            | _[Fill In]_    | _[Fill In]_   | _[Fill In]_    |
+| **5. Low Learning Rate** | `lstm`     | `learning_rate=0.0001`       | _[Fill In]_    | _[Fill In]_   | _[Fill In]_    |
+
+### Baseline LSTM
+
+This model performed pretty badly. It made me doubt my code and my architecture and training loop. I've decided to modify the other hyperparameters as well to see if I was the problem. I did not set a target validation loss for this experiment, maybe that was the problem. The model probably ended up overfitting on the training data.
+
+### GRU Model
+
+This model performed slightly better than baseline LSTM and took less time training due to its architecture. Still, it's not extremely accurate.
+
+## Deeper LSTM
+
+### Wider LSTM
+
+This model did roughly like baseline LSTM, taking much more time to
