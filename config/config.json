@@ -30,7 +30,7 @@
     "output_size": 1,
     "dropout": 0.2,
     "lstm": {
-      "hidden_size": 128,
+      "hidden_size": 512,
       "num_layers": 4
     },
     "gru": {
